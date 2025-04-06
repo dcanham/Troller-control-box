@@ -8,7 +8,7 @@
 #define ENCODER_DT 26       // Rotary Encoder Data Pin (B)
 #define ENCODER_SW 14       // Rotary Encoder Button Pin (SW)
 #define SERVO_PIN 18        // Servo Motor Pin
-#define BEEP_PIN 16   // Pin for the beeper
+#define BEEP_PIN 16         // Pin for the beeper
 
 #define BUTTON_1 2          // Additional Button 1 (GPIO 2)
 #define BUTTON_2 15         // Additional Button 2 (GPIO 15)
@@ -39,6 +39,10 @@ bool invertAxis = false; // Flag to track if servo direction is inverted
 const int ZERO_VALUE_ADDR = 0;
 const int INVERT_AXIS_ADDR = 1; // Store the invertAxis flag (1 byte)
 
+// ----- Random Mode -----
+bool randomMode = false;  // Flag to track if random mode is active
+unsigned long randomModeStartTime = 0; // To track when random mode started
+
 // Forward declaration for the interrupt function
 void IRAM_ATTR handleEncoder();
 
@@ -61,7 +65,7 @@ void setup() {
   pinMode(ENCODER_SW, INPUT_PULLUP);  // Encoder button pin as input with pull-up
   pinMode(BUTTON_1, INPUT_PULLUP);    // Button 1 pin as input with pull-up
   pinMode(BUTTON_2, INPUT_PULLUP);    // Button 2 pin as input with pull-up
-  pinMode(BEEP_PIN, OUTPUT);           // Beeper pin setup
+  pinMode(BEEP_PIN, OUTPUT);          // Beeper pin setup
 
   // --- Servo Initialization ---
   myServo.setPeriodHertz(50);        // Set servo frequency to 50Hz (standard)
@@ -115,9 +119,9 @@ void loop() {
     encoderButtonPressed = true;
     Serial.println("Encoder button pressed - Resetting Servo to stored zero value");
     servoAngle = zeroValue; // Reset to stored zero position
+    randomMode = false;     // Stop random mode if it's active
     myServo.write(servoAngle); // Move servo to stored zero position
     updateLCD(); // Update the LCD with the new angle
-    
   }
 
   // --- Handle Encoder Button Release ---
@@ -151,7 +155,7 @@ void loop() {
     button1Held = false; // Reset button held state when released
   }
 
-  // --- Handle Button 2 Press (Invert Axis if held for 10 seconds) ---
+  // --- Handle Button 2 Press (Toggle Random Mode if held for 2 seconds) ---
   static unsigned long button2PressTime = 0;  // Track the time when Button 2 is pressed
   static bool button2Held = false;             // Flag to track if Button 2 is held
 
@@ -161,14 +165,12 @@ void loop() {
       button2Held = true;           // Mark button as held
     }
 
-    // If Button 2 is held for 10 seconds, invert the axis direction
-    if (millis() - button2PressTime >= 10000 && button2Held) {
-      invertAxis = !invertAxis; // Toggle the invertAxis flag
-      EEPROM.write(INVERT_AXIS_ADDR, invertAxis); // Save the invertAxis flag to EEPROM
-      EEPROM.commit(); // Ensure the value is written to EEPROM
-      Serial.println("Button 2 held - Inverting servo axis direction");
+    // If Button 2 is held for 2 seconds, toggle random mode
+    if (millis() - button2PressTime >= 2000 && button2Held) {
+      randomMode = !randomMode; // Toggle the randomMode flag
+      Serial.println(randomMode ? "Random mode ON" : "Random mode OFF");
       button2PressTime = millis(); // Reset the button press time after action
-      updateLCD(); // Update the LCD with the new axis direction
+      updateLCD(); // Update the LCD with the new mode status
       digitalWrite(BEEP_PIN, HIGH);   // Turn on beeper
       delay(500);                     // Wait for 500 milliseconds
       digitalWrite(BEEP_PIN, LOW);    // Turn off beeper
@@ -177,42 +179,67 @@ void loop() {
     button2Held = false; // Reset button held state when released
   }
 
-  delay(50); // Small delay to reduce CPU load and debounce buttons
-}
+  // --- Handle Both Buttons Pressed (Invert Axis if held for 10 seconds) ---
+  static unsigned long bothButtonsPressTime = 0;  // Track the time when both buttons are pressed
+  static bool bothButtonsHeld = false;             // Flag to track if both buttons are held
 
-// ----- Encoder ISR (Interrupt Service Routine) -----
-void IRAM_ATTR handleEncoder() {
-  int clkState = digitalRead(ENCODER_CLK); // Read current clock pin state
-  int dtState = digitalRead(ENCODER_DT);   // Read current data pin state
+  if (digitalRead(BUTTON_1) == LOW && digitalRead(BUTTON_2) == LOW) { // Both buttons pressed (LOW)
+    if (!bothButtonsHeld) {  // If both buttons are just pressed (not held)
+      bothButtonsPressTime = millis();  // Record the time when both are pressed
+      bothButtonsHeld = true;           // Mark both buttons as held
+    }
 
-  // Determine the direction of rotation based on the clock and data states
-  if (clkState != lastClkState) {
-    if (dtState != clkState) {
-      encoderSteps++;  // Clockwise rotation
-    } else {
-      encoderSteps--;  // Counter-clockwise rotation
+    // If both buttons are held for 10 seconds, invert the axis
+    if (millis() - bothButtonsPressTime >= 10000 && bothButtonsHeld) {
+      invertAxis = !invertAxis; // Toggle the invertAxis flag
+      EEPROM.write(INVERT_AXIS_ADDR, invertAxis); // Save the invertAxis setting to EEPROM
+      EEPROM.commit(); // Ensure the value is written to EEPROM
+      Serial.println(invertAxis ? "Axis inverted" : "Axis restored");
+      bothButtonsPressTime = millis(); // Reset the button press time after action
+      updateLCD(); // Update the LCD with the new axis status
+      digitalWrite(BEEP_PIN, HIGH);   // Turn on beeper
+      delay(500);                     // Wait for 500 milliseconds
+      digitalWrite(BEEP_PIN, LOW);    // Turn off beeper
+    }
+  } else {
+    bothButtonsHeld = false; // Reset both buttons held state when released
+  }
+
+  // --- Random Mode Logic ---
+  if (randomMode) {
+    if (millis() - randomModeStartTime > 500) { // 500 ms for random movements
+      randomModeStartTime = millis(); // Reset the start time for the next cycle
+      int randomMovement = random(0, 10); // Random movement within a small range
+      int randomDelay = random(200, 500); // Random delay between movements
+      int targetAngle = servoAngle + randomMovement;
+      targetAngle = constrain(targetAngle, minAngle, maxAngle); // Ensure it stays within bounds
+      myServo.write(targetAngle);  // Move servo to random target position
+      Serial.print("Random Target Angle: ");
+      Serial.println(targetAngle);  // Output random target angle to Serial Monitor
+      delay(randomDelay); // Wait for random delay before next movement
+      updateLCD(); // Update the LCD with the random movement angle
     }
   }
-
-  lastClkState = clkState; // Update the last clock state for next interrupt
 }
 
-// ----- Update LCD Function -----
-// ----- Update LCD Function -----
-void updateLCD() {
-  lcd.setCursor(0, 1); // Set cursor to second row
-  lcd.print("                "); // Clear the second row
-  lcd.setCursor(0, 1); // Reset cursor to the start of second row
-  lcd.print("Angle: "); // Display the "Angle" label
-  lcd.print(servoAngle); // Display the current servo angle
-
-  // Display Axis Inversion Status
-  lcd.setCursor(0, 0);  // Set cursor to first row
-  lcd.print("Invert: ");
-  if (invertAxis) {
-    lcd.print("Yes "); // Ensure extra space to clear any previous letters
-  } else {
-    lcd.print("No ");  // Ensure extra space to clear any previous letters
+void IRAM_ATTR handleEncoder() {
+  int clkState = digitalRead(ENCODER_CLK); // Read current clock state
+  if (clkState != lastClkState) {
+    if (digitalRead(ENCODER_DT) != clkState) {
+      encoderSteps++; // If encoder is rotating clockwise, increment steps
+    } else {
+      encoderSteps--; // If encoder is rotating counterclockwise, decrement steps
+    }
   }
+  lastClkState = clkState; // Update the last state of the clock pin
 }
 
+// Function to update the LCD with the current servo angle
+void updateLCD() {
+  lcd.clear();               // Clear the LCD display
+  lcd.setCursor(0, 0);       // Set cursor to the first row
+  lcd.print("Servo Angle: ");
+  lcd.print(servoAngle);     // Print the current angle
+  lcd.setCursor(0, 1);       // Set cursor to the second row
+  lcd.print(randomMode ? "Random Mode: ON" : "Random Mode: OFF");
+}
