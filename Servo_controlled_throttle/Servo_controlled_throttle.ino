@@ -133,7 +133,7 @@ void loop() {
   static unsigned long button1PressTime = 0;  // Track the time when Button 1 is pressed
   static bool button1Held = false;             // Flag to track if Button 1 is held
 
-  if (digitalRead(BUTTON_1) == LOW) { // Button 1 pressed (LOW)
+  if (digitalRead(BUTTON_1) == LOW && digitalRead(BUTTON_2) == HIGH) { // Button 1 pressed (LOW)
     if (!button1Held) {  // If Button 1 is just pressed (not held)
       button1PressTime = millis();  // Record the time when pressed
       button1Held = true;           // Mark button as held
@@ -159,7 +159,7 @@ void loop() {
   static unsigned long button2PressTime = 0;  // Track the time when Button 2 is pressed
   static bool button2Held = false;             // Flag to track if Button 2 is held
 
-  if (digitalRead(BUTTON_2) == LOW) { // Button 2 pressed (LOW)
+  if (digitalRead(BUTTON_2) == LOW && digitalRead(BUTTON_1) == HIGH) { // Button 2 pressed (LOW)
     if (!button2Held) {  // If Button 2 is just pressed (not held)
       button2PressTime = millis();  // Record the time when pressed
       button2Held = true;           // Mark button as held
