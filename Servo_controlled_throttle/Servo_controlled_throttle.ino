@@ -2,6 +2,8 @@
 #include <LiquidCrystal_I2C.h>
 #include <ESP32Servo.h>
 #include <EEPROM.h>
+#include <WiFi.h>
+#include <ArduinoOTA.h>
 
 // ----- Pin Definitions -----
 #define ENCODER_CLK 13      // Rotary Encoder Clock Pin (A)
@@ -9,8 +11,8 @@
 #define ENCODER_SW 14       // Rotary Encoder Button Pin (SW)
 #define SERVO_PIN 18        // Servo Motor Pin
 #define BEEP_PIN 16         // Pin for the beeper
-
-#define BUTTON_1 2          // Additional Button 1 (GPIO 2)
+#define OTA_BUTTON_PIN 17    // or another unused GPIO pin
+#define BUTTON_1 4          // Additional Button 1 (GPIO 2)
 #define BUTTON_2 15         // Additional Button 2 (GPIO 15)
 
 // ----- Servo Setup -----
@@ -20,6 +22,10 @@ const int minAngle = 0;   // Minimum servo angle (0°)
 const int maxAngle = 180; // Maximum servo angle (180°)
 const int stepSize = 1;   // Precision movement (1° per step)
 
+// ----- Wifi Setup -----
+const char* ssid = "------";
+const char* password = "------";
+
 // ----- LCD Setup -----
 LiquidCrystal_I2C lcd(0x27, 16, 2); // I2C address (0x27), LCD size (16x2)
 
@@ -28,7 +34,7 @@ volatile int encoderSteps = 0; // To store the number of steps from the encoder
 int lastClkState = HIGH;       // To track the last state of the encoder clock pin
 bool encoderButtonPressed = false; // Flag to track the encoder button state
 
-// ----- Persistent Zero Value in EEPROM -----
+// ----- Persistent Zero Value in EEPROM ----- test
 int zeroValue = 0;             // Default zero value for the servo
 const int EEPROM_SIZE = 512;   // EEPROM size for ESP32
 
@@ -50,7 +56,7 @@ void setup() {
   // Begin serial communication for debugging
   Serial.begin(115200);
   Serial.println("Starting ESP32 Servo Controller...");
-
+  
   // --- Initialize EEPROM ---
   EEPROM.begin(EEPROM_SIZE);   // Initialize EEPROM storage
   zeroValue = EEPROM.read(ZERO_VALUE_ADDR);  // Read the stored zero value
@@ -66,6 +72,7 @@ void setup() {
   pinMode(BUTTON_1, INPUT_PULLUP);    // Button 1 pin as input with pull-up
   pinMode(BUTTON_2, INPUT_PULLUP);    // Button 2 pin as input with pull-up
   pinMode(BEEP_PIN, OUTPUT);          // Beeper pin setup
+  pinMode(OTA_BUTTON_PIN, INPUT_PULLUP); // assumes button pulls pin LOW when pressed
 
   // --- Servo Initialization ---
   myServo.setPeriodHertz(50);        // Set servo frequency to 50Hz (standard)
@@ -93,7 +100,12 @@ void setup() {
 }
 
 void loop() {
-  // --- Process Encoder Movement ---
+ //Check if OTA button was pressed 
+  if (digitalRead(OTA_BUTTON_PIN) == LOW) {
+    enterOTAUpdateMode();
+  }
+
+//<------------ Process Encoder Movement ------------>
   if (encoderSteps != 0) { // If the encoder has moved
     int newAngle = servoAngle + (encoderSteps * stepSize); // Calculate the new angle
 
@@ -114,7 +126,9 @@ void loop() {
     }
   }
 
-  // --- Handle Encoder Button Press (Reset Servo to "Zero" Value) ---
+
+//<-------Handle Encoder Button Press AKA reset servo to idle---------  
+
   if (digitalRead(ENCODER_SW) == LOW && !encoderButtonPressed) { // Button pressed (LOW)
     encoderButtonPressed = true;
     Serial.println("Encoder button pressed - Resetting Servo to stored zero value");
@@ -129,6 +143,8 @@ void loop() {
     encoderButtonPressed = false; // Reset the button press state
   }
 
+
+//<--------Handle Button 1 AKA Reset Zero Position----------------->
   // --- Handle Button 1 Press (Set New "Zero" Value if held for 3 seconds) ---
   static unsigned long button1PressTime = 0;  // Track the time when Button 1 is pressed
   static bool button1Held = false;             // Flag to track if Button 1 is held
@@ -140,22 +156,23 @@ void loop() {
     }
 
     // If Button 1 is held for 3 seconds, set the current angle as the new zero
-    if (millis() - button1PressTime >= 3000 && button1Held) {
+    if (millis() - button1PressTime >= 2000 && button1Held) {
       zeroValue = servoAngle; // Set the current angle as the new zero
       EEPROM.write(ZERO_VALUE_ADDR, zeroValue); // Save the new zero value to EEPROM
       EEPROM.commit(); // Ensure the value is written to EEPROM
       Serial.println("Button 1 held - New zero value set");
       button1PressTime = millis(); // Reset the button press time after action
       updateLCD(); // Update the LCD with the new "zero" value
-      digitalWrite(BEEP_PIN, HIGH);   // Turn on beeper
-      delay(500);                     // Wait for 500 milliseconds
-      digitalWrite(BEEP_PIN, LOW);    // Turn off beeper
     }
   } else {
     button1Held = false; // Reset button held state when released
   }
 
-  // --- Handle Button 2 Press (Toggle Random Mode if held for 2 seconds) ---
+
+
+
+
+//<---------Button 2 Logic AKA Random Mode --------------->
   static unsigned long button2PressTime = 0;  // Track the time when Button 2 is pressed
   static bool button2Held = false;             // Flag to track if Button 2 is held
 
@@ -171,75 +188,156 @@ void loop() {
       Serial.println(randomMode ? "Random mode ON" : "Random mode OFF");
       button2PressTime = millis(); // Reset the button press time after action
       updateLCD(); // Update the LCD with the new mode status
-      digitalWrite(BEEP_PIN, HIGH);   // Turn on beeper
-      delay(500);                     // Wait for 500 milliseconds
-      digitalWrite(BEEP_PIN, LOW);    // Turn off beeper
     }
   } else {
     button2Held = false; // Reset button held state when released
   }
 
-  // --- Handle Both Buttons Pressed (Invert Axis if held for 10 seconds) ---
-  static unsigned long bothButtonsPressTime = 0;  // Track the time when both buttons are pressed
-  static bool bothButtonsHeld = false;             // Flag to track if both buttons are held
 
-  if (digitalRead(BUTTON_1) == LOW && digitalRead(BUTTON_2) == LOW) { // Both buttons pressed (LOW)
-    if (!bothButtonsHeld) {  // If both buttons are just pressed (not held)
-      bothButtonsPressTime = millis();  // Record the time when both are pressed
-      bothButtonsHeld = true;           // Mark both buttons as held
+  static unsigned long button1and2PressTime = 0;  // Track the time when Button 2 is pressed
+  static bool button1and2Held = false;             // Flag to track if Button 2 is held
+
+
+//<---------Invert Axis Logic--------------->
+  if (digitalRead(BUTTON_2) == LOW && digitalRead(BUTTON_1) == LOW) { // Button 1 and 2 pressed at the same time
+    if (!button1and2Held) {  // If Button 2 is just pressed (not held)
+      button1and2PressTime = millis();  // Record the time when pressed
+      button1and2Held = true;           // Mark button as held
     }
 
-    // If both buttons are held for 10 seconds, invert the axis
-    if (millis() - bothButtonsPressTime >= 10000 && bothButtonsHeld) {
+    // If Button 2 is held for 10 seconds, invert the axis direction
+    if (millis() - button1and2PressTime >= 5000 && button1and2Held) {
       invertAxis = !invertAxis; // Toggle the invertAxis flag
-      EEPROM.write(INVERT_AXIS_ADDR, invertAxis); // Save the invertAxis setting to EEPROM
+      EEPROM.write(INVERT_AXIS_ADDR, invertAxis); // Save the invertAxis flag to EEPROM
       EEPROM.commit(); // Ensure the value is written to EEPROM
-      Serial.println(invertAxis ? "Axis inverted" : "Axis restored");
-      bothButtonsPressTime = millis(); // Reset the button press time after action
-      updateLCD(); // Update the LCD with the new axis status
-      digitalWrite(BEEP_PIN, HIGH);   // Turn on beeper
-      delay(500);                     // Wait for 500 milliseconds
-      digitalWrite(BEEP_PIN, LOW);    // Turn off beeper
+      Serial.println("Button 2 held - Inverting servo axis direction");
+      button1and2PressTime = millis(); // Reset the button press time after action
+      updateLCD(); // Update the LCD with the new axis direction
     }
   } else {
-    bothButtonsHeld = false; // Reset both buttons held state when released
+    button1and2Held = false; // Reset button held state when released
   }
 
-  // --- Random Mode Logic ---
-  if (randomMode) {
-    if (millis() - randomModeStartTime > 500) { // 500 ms for random movements
-      randomModeStartTime = millis(); // Reset the start time for the next cycle
-      int randomMovement = random(0, 10); // Random movement within a small range
-      int randomDelay = random(200, 500); // Random delay between movements
-      int targetAngle = servoAngle + randomMovement;
-      targetAngle = constrain(targetAngle, minAngle, maxAngle); // Ensure it stays within bounds
-      myServo.write(targetAngle);  // Move servo to random target position
-      Serial.print("Random Target Angle: ");
-      Serial.println(targetAngle);  // Output random target angle to Serial Monitor
-      delay(randomDelay); // Wait for random delay before next movement
-      updateLCD(); // Update the LCD with the random movement angle
-    }
-  }
+  delay(50); // Small delay to reduce CPU load and debounce buttons
+  
+
 }
 
+// ----- Encoder Interrupt Function -----
 void IRAM_ATTR handleEncoder() {
-  int clkState = digitalRead(ENCODER_CLK); // Read current clock state
-  if (clkState != lastClkState) {
-    if (digitalRead(ENCODER_DT) != clkState) {
-      encoderSteps++; // If encoder is rotating clockwise, increment steps
-    } else {
-      encoderSteps--; // If encoder is rotating counterclockwise, decrement steps
+  int clkState = digitalRead(ENCODER_CLK); // Read the current state of the clock pin
+  if (clkState != lastClkState) { // Only process if the state has changed
+    if (digitalRead(ENCODER_DT) != clkState) { // Clockwise rotation
+      encoderSteps++;
+    } else { // Counterclockwise rotation
+      encoderSteps--;
     }
   }
-  lastClkState = clkState; // Update the last state of the clock pin
+  lastClkState = clkState; // Update the last state
 }
 
-// Function to update the LCD with the current servo angle
+
+
+// ----- Update LCD Display -----
 void updateLCD() {
-  lcd.clear();               // Clear the LCD display
-  lcd.setCursor(0, 0);       // Set cursor to the first row
-  lcd.print("Servo Angle: ");
-  lcd.print(servoAngle);     // Print the current angle
-  lcd.setCursor(0, 1);       // Set cursor to the second row
-  lcd.print(randomMode ? "Random Mode: ON" : "Random Mode: OFF");
+  lcd.clear();  // Clear the LCD screen
+  //Print Throttle
+  lcd.setCursor(0, 0); // Set cursor to first row
+  lcd.print("Speed:");
+  lcd.print(servoAngle);
+
+  //Print Random on or off
+  lcd.setCursor(9, 0); // Set cursor to first row, 13th position
+  lcd.print(!randomMode ? "" : "Random");
+
+  //Print Idle Value
+  lcd.setCursor(0, 1); // Set cursor to second row
+  lcd.print("Idle:");
+  lcd.print(zeroValue);
+
+  //Print Inverted or not
+  lcd.setCursor(8, 1); // Set cursor to the second row, after "Zero: "
+  lcd.print(invertAxis ? "Invert" : "Normal");
 }
+
+
+
+
+
+
+//------------- ----- ENTER OTA MODE ----------------------------------------------
+void enterOTAUpdateMode() {
+  Serial.println("Entering OTA update mode...");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Entering OTA...");
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  unsigned long startAttemptTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 15000) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi connected!");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("IP:");
+    lcd.setCursor(0, 1);
+    lcd.print(WiFi.localIP()); // Show IP address
+
+    ArduinoOTA.setHostname("YourDeviceName"); // Optional
+    ArduinoOTA.begin();
+
+    // Flash OTA indicator
+    bool blink = false;
+    while (true) {
+      ArduinoOTA.handle();
+
+      // Optional: blink "Waiting..." on top row
+      if (millis() % 1000 < 500) {
+        if (!blink) {
+          lcd.setCursor(4, 0);
+          lcd.print("OTA...");
+          blink = true;
+        }
+      } else {
+        if (blink) {
+          lcd.setCursor(4, 0);
+          lcd.print("       ");
+          blink = false;
+        }
+      }
+
+      delay(10);
+    }
+  } else {
+    Serial.println("\nWiFi connection failed.");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("WiFi Failed");
+    delay(2000);
+    updateLCD();
+  }
+}
+
+
+
+//to be added later:
+  // --- Random Mode Logic ---
+  // if (randomMode) {
+  //   if (millis() - randomModeStartTime > 500) { // 500 ms for random movements
+  //     randomModeStartTime = millis(); // Reset the start time for the next cycle
+  //     int randomMovement = random(0, 10); // Random movement within a small range
+  //     int randomDelay = random(200, 500); // Random delay between movements
+  //     int targetAngle = servoAngle + randomMovement;
+  //     targetAngle = constrain(targetAngle, minAngle, maxAngle); // Ensure it stays within bounds
+  //     myServo.write(targetAngle);  // Move servo to random target position
+  //     Serial.print("Random Target Angle: ");
+  //     Serial.println(targetAngle);  // Output random target angle to Serial Monitor
+  //     delay(randomDelay); // Wait for random delay before next movement
+  //     updateLCD(); // Update the LCD with the random movement angle
+  //   }
+  // }
