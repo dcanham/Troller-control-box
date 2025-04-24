@@ -14,6 +14,11 @@
 #define OTA_BUTTON_PIN 17    // or another unused GPIO pin
 #define BUTTON_1 4          // Additional Button 1 (GPIO 2)
 #define BUTTON_2 15         // Additional Button 2 (GPIO 15)
+//#define SCREENCLOCK D22
+//#define SCREENSDA D21
+//purple = all clocks
+//grey = all SDA
+
 
 // ----- Servo Setup -----
 Servo myServo;            // Servo object
@@ -21,10 +26,11 @@ int servoAngle = 90;      // Start angle for the servo (default 90°)
 const int minAngle = 0;   // Minimum servo angle (0°)
 const int maxAngle = 180; // Maximum servo angle (180°)
 const int stepSize = 1;   // Precision movement (1° per step)
+int currentAngle = 0;
 
 // ----- Wifi Setup -----
 const char* ssid = "------";
-const char* password = "------";
+const char* password = "--------";
 
 // ----- LCD Setup -----
 LiquidCrystal_I2C lcd(0x27, 16, 2); // I2C address (0x27), LCD size (16x2)
@@ -40,6 +46,7 @@ const int EEPROM_SIZE = 512;   // EEPROM size for ESP32
 
 // ----- Invert Axis Flag -----
 bool invertAxis = false; // Flag to track if servo direction is inverted
+bool flipIdle = true; // Flag to flip flop between idle and last position
 
 // EEPROM addresses for storing data
 const int ZERO_VALUE_ADDR = 0;
@@ -99,11 +106,28 @@ void setup() {
   Serial.println(invertAxis ? "Yes" : "No");
 }
 
+
+//enterOTAUpdateMode();
+
 void loop() {
  //Check if OTA button was pressed 
+  static unsigned long buttonOTAPressTime = 0;  // Track the time when Button 1 is pressed
+  static bool buttonOTAHeld = false;             // Flag to track if Button 1 is held
+
   if (digitalRead(OTA_BUTTON_PIN) == LOW) {
-    enterOTAUpdateMode();
+    if (!buttonOTAHeld) {  // If Button 1 is just pressed (not held)
+      buttonOTAPressTime = millis();  // Record the time when pressed
+      buttonOTAHeld = true;           // Mark button as held
+    }
+  // If Button 1 is held for 3 seconds, set the current angle as the new zero
+    if (millis() - buttonOTAPressTime >= 2000 && buttonOTAHeld) {
+      enterOTAUpdateMode();
+    }
+  } else {
+    buttonOTAHeld = false; // Reset button held state when released
   }
+    
+
 
 //<------------ Process Encoder Movement ------------>
   if (encoderSteps != 0) { // If the encoder has moved
@@ -127,14 +151,29 @@ void loop() {
   }
 
 
-//<-------Handle Encoder Button Press AKA reset servo to idle---------  
+
+
+//<-------Handle Encoder Button Press AKA Flip Flop Idle Position---------  
 
   if (digitalRead(ENCODER_SW) == LOW && !encoderButtonPressed) { // Button pressed (LOW)
     encoderButtonPressed = true;
-    Serial.println("Encoder button pressed - Resetting Servo to stored zero value");
-    servoAngle = zeroValue; // Reset to stored zero position
-    randomMode = false;     // Stop random mode if it's active
-    myServo.write(servoAngle); // Move servo to stored zero position
+    Serial.println("Encoder button pressed - Flipping throttle position");
+    if (flipIdle){
+      //save current position and set throttle to idle
+      currentAngle = servoAngle;
+      servoAngle = zeroValue; // Reset to stored zero position
+      myServo.write(servoAngle); // Move servo to stored zero position
+      flipIdle = !flipIdle;
+    }
+
+    else {
+      //Set throttle to previous position before idle
+      servoAngle = currentAngle; // Reset to stored zero position
+      myServo.write(servoAngle); // Move servo to stored zero position
+      flipIdle = !flipIdle;
+    }
+    //servoAngle = zeroValue; // Reset to stored zero position
+    //randomMode = false;     // Stop random mode if it's active
     updateLCD(); // Update the LCD with the new angle
   }
 
@@ -142,6 +181,10 @@ void loop() {
   if (digitalRead(ENCODER_SW) == HIGH && encoderButtonPressed) { // Button released (HIGH)
     encoderButtonPressed = false; // Reset the button press state
   }
+
+
+
+
 
 
 //<--------Handle Button 1 AKA Reset Zero Position----------------->
@@ -172,6 +215,8 @@ void loop() {
 
 
 
+
+
 //<---------Button 2 Logic AKA Random Mode --------------->
   static unsigned long button2PressTime = 0;  // Track the time when Button 2 is pressed
   static bool button2Held = false;             // Flag to track if Button 2 is held
@@ -194,11 +239,13 @@ void loop() {
   }
 
 
-  static unsigned long button1and2PressTime = 0;  // Track the time when Button 2 is pressed
-  static bool button1and2Held = false;             // Flag to track if Button 2 is held
+
+
 
 
 //<---------Invert Axis Logic--------------->
+  static unsigned long button1and2PressTime = 0;  // Track the time when Button 2 is pressed
+  static bool button1and2Held = false;             // Flag to track if Button 2 is held
   if (digitalRead(BUTTON_2) == LOW && digitalRead(BUTTON_1) == LOW) { // Button 1 and 2 pressed at the same time
     if (!button1and2Held) {  // If Button 2 is just pressed (not held)
       button1and2PressTime = millis();  // Record the time when pressed
